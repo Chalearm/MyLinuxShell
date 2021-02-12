@@ -10,6 +10,16 @@
 
 #define TOKEN_DELIMITER " \t\r\n\a"
 
+#define DEFAULT_PATH_VAR "export PATH=/usr/bin:/bin:$HOME"
+#define DEFAULT_HOME_VAR "export HOME=/home/faculty/dastacey"
+#define DEFAULT_PROFILE_NAME ".CIS3110_profile"
+#define DEFAULT_HISTAORY_NAME ".CIS3110_history"
+
+struct envVar
+{
+  char name[20];
+  char msg[100];
+};
 //Function definitions
 char *getUserInput();
 char** stringTokenizer(char* command);
@@ -17,13 +27,19 @@ int numberOfArguments(char **tokens);
 
 int exists(const char *fname);
 void keepHistory(const char **cmdMsg,const int numAgur);
+int historyCmd(const char **tokens);
+void initialProfile(struct envVar *eVar,int *numEnvVar);
 int findSpecialSymbolInToken(char **tokes,const int numAgru,const char specialChar);
 void printError(int status, char* token);
 void sigquit(int signo);
-void changeDirectory(char** tokens);
+char* printEnvValue(struct envVar *eVar,int *numEnvVar,char *buff, int EnvVarId);
+void changeDirectory(char** tokens,struct envVar *eVar,int *numEnvVar);
 void readFileOrBufferAndExecute(char **argu,const char *filename,const char *buffer);
 void executeAndPrintToPipe(char **argu,int pipeIndex,const char *buff2);
 void executeAndPrintToFile(char **argu,const char *filename,int fileId);
+void executeCmd(char **argu);
+int echoCmd(char **argu,struct envVar *eVar,int *numEnvVar);
+void replaceAll(char *str, const char *oldWord, const char *newWord);
 
 void handler(int sig);
 #define NUM_CHILD 30
@@ -51,42 +67,30 @@ int main () {
     sigact.sa_handler = &handler;
     sigaction(SIGCHLD, &sigact, 0);
 
+struct envVar eVar[40];
+int numEVar =0;
+
 int i = 0;
 //initial buffer
   for(i = 0;i<NUM_CHILD;i++)
   children[i].pid = -1;
    
+
    while (strcmp("exit", input) != 0){
 
-      // reset condition varible 
+      // reset condition varible
+    initialProfile(eVar,&numEVar); 
       // print prompt 
       printf("%s>", getcwd(NULL, 0));
       input = getUserInput();
 
       char** tokens = stringTokenizer(input);
       int arguments = numberOfArguments(tokens);
-
-     keepHistory(tokens,arguments);
+      if(echoCmd(tokens,eVar,&numEVar) == 1)continue;
+      keepHistory(tokens,arguments);
       if(tokens[0] == 0) continue;  // protect Segmentation fault 11 
      if(strncmp("exit", tokens[0], 4) == 0)
          break;
-    if(strncmp("history",tokens[0],7) ==0)
-    {
-        int i = 1;
-        printf("sfdfdkl");
-        char buffer[100];
-        FILE *file = fopen(".CIS3110_history","r");
-        while(fgets (buffer, 100, file)!=NULL)
-        {
-         // if (tokens[1] )
-          printf("%d %s",i++,buffer);
-        }
-        continue;
-    }
-    else
-    {
-      printf("%s ---\n",tokens[0]);
-    }
 
             char *lastCharacter = tokens[arguments-1];
             if(strcmp("&", lastCharacter) == 0)
@@ -96,10 +100,8 @@ int i = 0;
 
             } else if(strcmp("cd", tokens[0]) == 0)
             {
-               changeDirectory(tokens);
-            }
-             else {
-              
+               changeDirectory(tokens,eVar,&numEVar);
+               continue;
             }
       childpid = fork();
       
@@ -122,7 +124,7 @@ int i = 0;
             }
             else if(isStdInProcess <= 0)
             {
-               execvp(tokens[0], tokens);
+                executeCmd(tokens);
             }
             else
             {
@@ -173,9 +175,38 @@ void sigquit(int signo) {
     exit(0);
 }
 
-void changeDirectory(char** tokens){
-     if (chdir(tokens[1]) != 0)
-       perror("chdir() to /error failed");
+void changeDirectory(char** tokens,struct envVar *eVar,int *numEnvVar)
+{
+  int i = 0;
+  char buff[200];
+  int isFoundSpecialPath = 0;
+
+  if(tokens[1][0] == '$')
+  {
+    for(i=0;i<*numEnvVar;i++)
+      if(strcmp(&tokens[1][1],eVar[i].name) == 0) // found
+      {
+        printEnvValue(eVar,numEnvVar,buff,i);
+        i = *numEnvVar;
+        isFoundSpecialPath = 1;
+      }
+  }
+  else if (tokens[1][0] == '~')
+  {    
+    for(i=0;i<*numEnvVar;i++)
+      if(strcmp("HOME",eVar[i].name) == 0) // found
+      {
+        printEnvValue(eVar,numEnvVar,buff,i);
+        i = *numEnvVar;
+        isFoundSpecialPath = 1;
+      }
+  }
+  if(isFoundSpecialPath == 0)
+  {
+    memcpy(buff,tokens[1],sizeof(tokens[1]));
+  }
+  if (chdir(buff) != 0)
+    perror("chdir() to /error failed");
 }
 
 
@@ -329,13 +360,14 @@ void executeAndPrintToPipe(char **argu,int pipeIndex,const char *buff2)
       dup2(fds[1], 2);  // send stderr to the pipe
 
       close(fds[1]);
-      argu[pipeIndex] = '\0';
+      argu[pipeIndex][0] = '\0';
 
             isStdInProcess = findSpecialSymbolInToken(argu,pipeIndex-1,'<');
             if(isStdInProcess <= 0)
             { 
-              execvp(argu[0],argu);
-              //exit(0);
+              //printf("Pint command : %s \n",argu[0]);
+              executeCmd(argu);
+              exit(0);
             }
             else if (buff2 == 0)
             {
@@ -344,8 +376,8 @@ void executeAndPrintToPipe(char **argu,int pipeIndex,const char *buff2)
             }
             else
             {
-              argu[isStdInProcess] = '\0';
-              readFileOrBufferAndExecute(argu,argu[isStdInProcess+1],buff2);
+              argu[1] = '\0';
+              readFileOrBufferAndExecute(argu,argu[1],buff2);
             }
   }
   else
@@ -357,17 +389,18 @@ void executeAndPrintToPipe(char **argu,int pipeIndex,const char *buff2)
       close(fds[1]);  // close the write end of the pipe in the parent
       int numAgur = 0;
       int size = read(fds[0], buffer, sizeof(buffer));
+      char **token3 = &argu[pipeIndex+1];
       buffer[size] = 0;
 
-      numAgur = numberOfArguments(&argu[pipeIndex+1]);
-            char isPipeFound = findSpecialSymbolInToken(&argu[pipeIndex+1],numAgur,'|');
+            numAgur = numberOfArguments(token3);
+            char isPipeFound = findSpecialSymbolInToken(token3,numAgur,'|');
             if(isPipeFound > 0)
             {
-              executeAndPrintToPipe(&argu[pipeIndex+1],isPipeFound,buffer);
+              executeAndPrintToPipe(token3,isPipeFound,buffer);
             }
             else
             {
-                readFileOrBufferAndExecute(&argu[pipeIndex+1],0,buffer);
+                readFileOrBufferAndExecute(token3,0,buffer);
             }
       waitpid(pid,NULL,0);
   }
@@ -382,7 +415,7 @@ void readFileOrBufferAndExecute(char **argu,const char *filename,const char *buf
     {
        close(fds[1]);
        dup2 (fds[0],STDIN_FILENO);
-       execvp(argu[0], argu);
+        executeCmd(argu);
       // exit(0);
     }
     else
@@ -405,7 +438,7 @@ void readFileOrBufferAndExecute(char **argu,const char *filename,const char *buf
           char *p = strtok(buffer, "\n");
           while(p)
           {
-            printf("%s\n", p); //Store into array or variables
+            //printf("%s\n", p); //Store into array or variables
             fprintf( stream,"%s\n",p);
             p=strtok(NULL, "\n");
           }
@@ -431,7 +464,7 @@ void keepHistory(const char **cmdMsg,const int numAgur)
   FILE *file = 0;
   int i = 0;
 
-    file = fopen(".CIS3110_history","a");
+    file = fopen(DEFAULT_HISTAORY_NAME,"a");
      for(i = 0;i < numAgur;i++)
       fprintf(file,"%s ",cmdMsg[i]);  
     fprintf(file,"\n");
@@ -447,6 +480,8 @@ void executeAndPrintToFile(char **argu,const char *filename,int fileId)
   if (pid == 0)
   {
     // child
+    FILE *fp = fopen(filename,"w");
+    if (fp)fclose(fp); // clear out
     int fd = open(filename, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
 
     dup2(fd, 1); 
@@ -466,7 +501,7 @@ void executeAndPrintToFile(char **argu,const char *filename,int fileId)
      }
      else
      {
-       execvp(argu[0], argu);
+        executeCmd(argu);
      }
   }
   else
@@ -481,4 +516,232 @@ void executeAndPrintToFile(char **argu,const char *filename,int fileId)
          readFileOrBufferAndExecute(&token2[isPipeFound+1],filename,0);
        }
   }
+}
+
+int historyCmd(const char **tokens)
+{
+
+    int ret = -1; // not ok
+
+    int arguments = numberOfArguments(tokens);
+    if(strncmp("history",tokens[0],7) ==0)
+    {
+
+        char historyBuff[100][120]; // for 100 lines and 120 characters per line
+        int i = 0;
+        char buffer[100];
+        FILE *file;
+        int numLines = 0;
+        int linePrintValue = 0;
+        // it should be number starting from 1
+     
+        if(arguments > 1)
+        {          
+          if ((tokens[1][0] > '0') && (tokens[1][0] <= '9'))
+          {
+            linePrintValue = atoi(tokens[1]);
+          }
+          else if ((tokens[1][0] == '-') && (tokens[1][1] == 'c'))
+          {
+            file = fopen(DEFAULT_HISTAORY_NAME,"w");
+            fclose(file);
+            keepHistory(tokens,arguments);
+            linePrintValue = 1;
+          }
+          else if(tokens[1][0] == '>')
+          {
+              //do nothing
+          }
+          else if (tokens[1][0] == '\0')
+          {
+              //do nothing
+          }
+          else
+          { 
+              //implement '>' here. or nothing]
+            return ret;
+          }
+        }
+        else
+        {
+          linePrintValue = -2;
+        }
+
+        file = fopen(DEFAULT_HISTAORY_NAME,"r");
+        while(fgets (buffer, 100, file)!=NULL)
+        {
+         // if (tokens[1] )
+          if (i < 100)
+          {
+            numLines++;
+            sprintf(historyBuff[i],"%d %s",1+i++,buffer);
+          }
+          else
+          {
+            break;
+          }
+        }
+        if (linePrintValue == -2) linePrintValue = numLines;
+        if (linePrintValue > numLines) linePrintValue = numLines;
+        for(i =(numLines-linePrintValue) ;i<numLines ;i++)
+        {
+          printf("%s",historyBuff[i]);
+        }
+        ret = 1;
+    }
+    else
+    {
+    }
+    return ret;
+}
+
+void executeCmd(char **argu)
+{
+  if(historyCmd(argu) == -1)
+  {
+
+    execvp(argu[0],argu);
+  }
+}
+
+void initialProfile(struct envVar *eVar,int *numEnvVar)
+{
+  FILE *fp = 0;
+  int i = 0;
+  int numEnvV = 0;
+  char buff[100];
+  //DEFAULT_PROFILE_NAME
+  if (exists(DEFAULT_PROFILE_NAME) == 0) // Not
+  {
+      //set default value
+    fp = fopen(DEFAULT_PROFILE_NAME,"w");
+    fprintf(fp,"%s\n",DEFAULT_PATH_VAR);
+    fprintf(fp,"%s\n",DEFAULT_HOME_VAR);
+    fclose(fp);
+  }
+  // load to variable 
+  fp = fopen(DEFAULT_PROFILE_NAME,"r");
+  if (fp)
+  {
+      char *firstSpaceCh;
+      char *firstEqualCh;
+
+        while(fgets (buff, 100, fp)!=NULL)
+        {
+          //fprintf( stream,"%s",buff);
+          firstSpaceCh = strstr(buff,"t");
+          firstEqualCh = strstr(buff,"=");
+          *firstEqualCh = '\0';
+          strcpy(eVar[i].name,firstSpaceCh+2);
+          
+          firstEqualCh++;
+          strcpy(eVar[i].msg,firstEqualCh);
+          if(eVar[i].msg[strlen(eVar[i].msg)-1 ] == '\n')
+          {
+            eVar[i].msg[strlen(eVar[i].msg)-1 ] = '\0';
+          }
+          numEnvV++;
+         // sscanf(buff,"export %s=%s\n",eVar[i].name,eVar[i].msg);
+          i++;
+        }
+
+        *numEnvVar = numEnvV;
+        
+        fclose(fp);
+  }
+}
+
+int echoCmd(char **argu,struct envVar *eVar,int *numEnvVar)
+{
+  int ret = 0;
+  int i =0;
+  int isFound = 0;
+  char *pch = 0;
+  char buff[400];
+  buff[0] = '\0';
+  if(argu[0] != 0)  // protect Segmentation fault 11 
+  if(strncmp("echo", argu[0], 4) == 0)
+  {
+            int arguments = numberOfArguments(argu);
+      if(arguments == 1)
+      {
+        printf("\n");
+      }
+      else if(argu[1][0] == '$')
+      {
+        for(i=0;i<*numEnvVar;i++)
+          if(strcmp(&argu[1][1],eVar[i].name) == 0) // found
+          {
+              printf("%s\n",printEnvValue(eVar,numEnvVar,buff,i));
+              i = *numEnvVar;
+              isFound = 1;
+          }
+        if(isFound == 0)
+        {            
+            if( arguments > 1)
+            for(i = 1;i < arguments;i++)
+             printf("%s ",argu[1]);
+           printf("\n");
+        }
+      }
+      else
+      {
+            if( arguments > 1)
+            for(i = 1;i < arguments;i++)
+             printf("%s ",argu[1]);
+           printf("\n");
+      }
+      ret = 1;
+  }
+
+ return ret;
+}
+
+
+char* printEnvValue(struct envVar *eVar,int *numEnvVar,char *buff, int EnvVarId)
+{
+  
+  int i = 0;
+  sprintf(buff,"%s",eVar[EnvVarId].msg);
+  for (i = 0;i < *numEnvVar;i++)
+  {
+    if(i != EnvVarId)
+    {
+      replaceAll(buff,eVar[i].name,eVar[i].msg);
+    }
+  }
+  
+    return buff;
+}
+
+void replaceAll(char *str, const char *oldWord, const char *newWord)
+{
+    char *pos, temp[300];
+    int index = 0;
+    int owlen;
+
+    owlen = strlen(oldWord);
+
+
+    /*
+     * Repeat till all occurrences are replaced. 
+     */
+    while ((pos = strstr(str, oldWord)) != NULL)
+    {
+        // Bakup current line
+        strcpy(temp, str);
+
+        // Index of current found word
+        index = pos - str;
+
+        // Terminate str after word found index
+        str[index] = '\0';
+
+        // Concatenate str with new word 
+        strcat(str, newWord);
+        
+        // Concatenate str with remaining words after 
+        // oldword found index.
+        strcat(str, temp + index + owlen);
+    }
 }

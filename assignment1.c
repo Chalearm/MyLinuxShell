@@ -17,44 +17,69 @@ void printError(int status, char* token);
 void sigquit(int signo);
 void changeDirectory(char** tokens);
 
+void handler(int sig);
+#define NUM_CHILD 30
+struct processAttrib
+{ 
+  int pid;
+  char cmdName[50];
+
+};
+struct processAttrib children[NUM_CHILD];
+void registerNewChild(struct processAttrib *children,const char **cmd,const int numAgru,const int pid);
+void reportWhoDone(struct processAttrib *children);
 int main () {
 
+    int numChild = 0;
    pid_t childpid;   /* child's process id */
    int status;       /* for parent process: child's exit status */
    char *input = "";
+   int background = 0;
     struct sigaction sigact;
     sigact.sa_flags = 0;
     sigemptyset(&sigact.sa_mask);
+    memset (&sigact, 0, sizeof (sigact));
+    sigact.sa_handler = &handler;
+    sigaction(SIGCHLD, &sigact, 0);
 
+int i = 0;
+//initial buffer
+  for(i = 0;i<NUM_CHILD;i++)
+  children[i].pid = -1;
    
    while (strcmp("exit", input) != 0){
+      background = 0;
       printf("%s>", getcwd(NULL, 0));
       input = getUserInput();
 
       char** tokens = stringTokenizer(input);
       int arguments = numberOfArguments(tokens);
-
-      if(strncmp("exit", tokens[0], 4) == 0)
+      if(tokens[0] == 0) continue;
+     if(strncmp("exit", tokens[0], 4) == 0)
          break;
-      
-      childpid = fork();
-
-      if ( childpid >= 0 ) {
-         if ( childpid == 0 ) {   
-
             char *lastCharacter = tokens[arguments-1];
             
             if(strcmp("&", lastCharacter) == 0)
             {
-               printf("Its &");
+              background = 1;
+                *lastCharacter = '\0';
+
             } else if(strcmp("cd", tokens[0]) == 0)
             {
                changeDirectory(tokens);
             }
              else {
-               execvp(tokens[0], tokens);
+              
             }
+      childpid = fork();
+      
+      if((background == 1) && (childpid != 0))
+        registerNewChild(children,tokens,arguments,childpid);
+      if ( childpid >= 0 ) {
+         if ( childpid == 0 ) {   
 
+
+               execvp(tokens[0], tokens);
 
 
             //print any error if exists
@@ -67,7 +92,10 @@ int main () {
             exit(status);
          } else {
             //printf("PARENT %d waiting for  child %d\n",getpid(),childpid);
-            waitpid(childpid,&status,0);
+            if(background== 0)
+              {
+                waitpid(childpid,&status,0);
+              }
             //printf("PARENT: Child's exit code is %d\n",WEXITSTATUS(status));
          }
       }
@@ -159,4 +187,65 @@ char** stringTokenizer(char* command) {
    return tokens;
 }
 
+void handler(int sig)
+{
+/* Clean up the child process. */
+int status;
+wait (&status);
+reportWhoDone(children);
+}
+/*
 
+struct processAttrib
+{ 
+  int pid;
+  char cmdName[50];
+
+};
+struct processAttrib children[NUM_CHILD];
+void registerNewChild(struct processAttrib *children,const char *cmd,const pid);
+void reportWhoDone(struct processAttrib *children);
+*/
+void reportWhoDone(struct processAttrib *children)
+{  
+int status;
+  int i = 0;
+  int value = 0;
+  for (i = 0 ;i <NUM_CHILD;i++)
+  {
+
+      if(children[i].pid != -1)
+      {
+          value = waitpid(children[i].pid,&status,WNOHANG);
+          if(value != 0)
+          {          
+              printf("\n[%d]+ Done %d              ",i,children[i].pid);
+              printf("%s\n",children[i].cmdName);
+              children[i].pid = -1;
+          }
+      }
+  }
+}
+void registerNewChild(struct processAttrib *children,const char **cmd,const int numAgru,const int pid)
+{
+  int j = 0;
+  int i = 0;
+  char buff[50];
+  buff[0] = '\0';
+  for (i = 0 ;i <NUM_CHILD;i++)
+  {
+      if(children[i].pid == -1)
+      {
+          children[i].pid = pid;
+          memset(children[i].cmdName,0,sizeof(children[i].cmdName));
+          for (j = 0;j < (numAgru-1);j++)
+          {
+            sprintf(buff,"%s %s",buff,cmd[j]);
+          }
+          sprintf(children[i].cmdName,"%s",buff);
+          //memcpy(children[i].cmdName,cmd,strlen(cmd));
+          printf("[%d] %d\n",i,pid);
+          break;
+      }
+  }
+}
